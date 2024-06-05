@@ -1,0 +1,371 @@
+Prerequisites
+Google Drive API: You need to set up a project in the Google Cloud Console and enable the Google Drive API.
+OAuth 2.0 Client Credentials: Download the credentials.json file from the Google Cloud Console.
+
+Install Google API Client Library: Use Composer to install the Google API client library.  
+composer require google/apiclient:^2.0
+
+Database Setup
+
+CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    images TEXT
+);
+
+follow php code 
+
+<?php
+require 'vendor/autoload.php';
+
+$servername = "your_servername";
+$username = "your_username";
+$password = "your_password";
+$dbname = "your_database_name";
+
+$conn = new mysqli($servername, $username, $password, $dbname);
+
+if ($conn->connect_error) {
+    die("Connection failed: " . $conn->connect_error);
+}
+
+function getClient() {
+    $client = new Google_Client();
+    $client->setApplicationName('Google Drive API PHP Quickstart');
+    $client->setScopes(Google_Service_Drive::DRIVE);
+    $client->setAuthConfig('credentials.json');
+    $client->setAccessType('offline');
+
+    if (file_exists('token.json')) {
+        $accessToken = json_decode(file_get_contents('token.json'), true);
+        $client->setAccessToken($accessToken);
+    }
+
+    if ($client->isAccessTokenExpired()) {
+        if ($client->getRefreshToken()) {
+            $client->fetchAccessTokenWithRefreshToken($client->getRefreshToken());
+        } else {
+            $authUrl = $client->createAuthUrl();
+            printf("Open the following link in your browser:\n%s\n", $authUrl);
+            print 'Enter verification code: ';
+            $authCode = trim(fgets(STDIN));
+            $accessToken = $client->fetchAccessTokenWithAuthCode($authCode);
+            $client->setAccessToken($accessToken);
+
+            if (array_key_exists('error', $accessToken)) {
+                throw new Exception(join(', ', $accessToken));
+            }
+        }
+        if (!file_exists(dirname('token.json'))) {
+            mkdir(dirname('token.json'), 0700, true);
+        }
+        file_put_contents('token.json', json_encode($client->getAccessToken()));
+    }
+    return $client;
+}
+
+function uploadImageToDrive($imagePath) {
+    $client = getClient();
+    $service = new Google_Service_Drive($client);
+
+    $file = new Google_Service_Drive_DriveFile();
+    $file->setName(basename($imagePath));
+    $file->setParents(array('your_drive_folder_id'));
+
+    $data = file_get_contents($imagePath);
+
+    $createdFile = $service->files->create($file, array(
+        'data' => $data,
+        'mimeType' => mime_content_type($imagePath),
+        'uploadType' => 'multipart'
+    ));
+
+    return $createdFile->id;
+}
+
+function deleteImageFromDrive($fileId) {
+    $client = getClient();
+    $service = new Google_Service_Drive($client);
+    $service->files->delete($fileId);
+}
+
+function insertRecord($conn, $name, $imagePaths) {
+    $imageIds = [];
+    foreach ($imagePaths as $path) {
+        $imageIds[] = uploadImageToDrive($path);
+    }
+    $imageIdsStr = implode(',', $imageIds);
+
+    $sql = "INSERT INTO users (name, images) VALUES ('$name', '$imageIdsStr')";
+    if ($conn->query($sql) === TRUE) {
+        echo "New record created successfully";
+    } else {
+        echo "Error: " . $sql . "<br>" . $conn->error;
+    }
+}
+
+function updateRecord($conn, $id, $name, $newImagePaths) {
+    $sql = "SELECT images FROM users WHERE id=$id";
+    $result = $conn->query($sql);
+    if ($result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $existingImageIds = explode(',', $row['images']);
+
+        foreach ($existingImageIds as $fileId) {
+            deleteImageFromDrive($fileId);
+        }
+
+        $newImageIds = [];
+        foreach ($newImagePaths as $path) {
+            $newImageIds[] = uploadImageToDrive($path);
+        }
+        $newImageIdsStr = implode(',', $newImageIds);
+
+        $sql = "UPDATE users SET name='$name', images='$newImageIdsStr' WHERE id=$id";
+        if ($conn->query($sql) === TRUE) {
+            echo "Record updated successfully";
+        } else {
+            echo "Error updating record: " . $conn->error;
+        }
+    } else {
+        echo "Record not found";
+    }
+}
+
+function deleteRecord($conn, $id) {
+    $sql = "SELECT images FROM users WHERE id=$id";
+    $result = $conn->query($sql);
+    if ($result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $imageIds = explode(',', $row['images']);
+
+        foreach ($imageIds as $fileId) {
+            deleteImageFromDrive($fileId);
+        }
+
+        $sql = "DELETE FROM users WHERE id=$id";
+        if ($conn->query($sql) === TRUE) {
+            echo "Record deleted successfully";
+        } else {
+            echo "Error deleting record: " . $conn->error;
+        }
+    } else {
+        echo "Record not found";
+    }
+}
+
+$conn->close();
+?>
+
+
+
+
+To achieve multiple image uploads with CRUD operations where images are stored in Google Drive, you'll need to integrate the Google Drive API with your PHP application. Below is an extended PHP script that includes functions to upload, update, and delete images in both your MySQL database and Google Drive.
+
+Prerequisites
+Google Drive API: You need to set up a project in the Google Cloud Console and enable the Google Drive API.
+OAuth 2.0 Client Credentials: Download the credentials.json file from the Google Cloud Console.
+Steps
+Install Google API Client Library: Use Composer to install the Google API client library.
+
+bash
+Copy code
+composer require google/apiclient:^2.0
+Database Setup: Ensure you have a table structured as follows:
+
+sql
+Copy code
+CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    images TEXT
+);
+PHP Script:
+Below is a PHP script that integrates CRUD operations with Google Drive for image storage.
+
+php
+Copy code
+<?php
+require 'vendor/autoload.php';
+
+$servername = "your_servername";
+$username = "your_username";
+$password = "your_password";
+$dbname = "your_database_name";
+
+// Create connection
+$conn = new mysqli($servername, $username, $password, $dbname);
+
+// Check connection
+if ($conn->connect_error) {
+    die("Connection failed: " . $conn->connect_error);
+}
+
+// Google API client setup
+function getClient() {
+    $client = new Google_Client();
+    $client->setApplicationName('Google Drive API PHP Quickstart');
+    $client->setScopes(Google_Service_Drive::DRIVE);
+    $client->setAuthConfig('credentials.json');
+    $client->setAccessType('offline');
+
+    // Load previously authorized token from a file, if it exists.
+    if (file_exists('token.json')) {
+        $accessToken = json_decode(file_get_contents('token.json'), true);
+        $client->setAccessToken($accessToken);
+    }
+
+    // If there is no previous token or it's expired.
+    if ($client->isAccessTokenExpired()) {
+        // Refresh the token if possible, else fetch a new one.
+        if ($client->getRefreshToken()) {
+            $client->fetchAccessTokenWithRefreshToken($client->getRefreshToken());
+        } else {
+            // Request authorization from the user.
+            $authUrl = $client->createAuthUrl();
+            printf("Open the following link in your browser:\n%s\n", $authUrl);
+            print 'Enter verification code: ';
+            $authCode = trim(fgets(STDIN));
+
+            // Exchange authorization code for an access token.
+            $accessToken = $client->fetchAccessTokenWithAuthCode($authCode);
+            $client->setAccessToken($accessToken);
+
+            // Check to see if there was an error.
+            if (array_key_exists('error', $accessToken)) {
+                throw new Exception(join(', ', $accessToken));
+            }
+        }
+        // Save the token to a file.
+        if (!file_exists(dirname('token.json'))) {
+            mkdir(dirname('token.json'), 0700, true);
+        }
+        file_put_contents('token.json', json_encode($client->getAccessToken()));
+    }
+    return $client;
+}
+
+// Upload image to Google Drive
+function uploadImageToDrive($imagePath) {
+    $client = getClient();
+    $service = new Google_Service_Drive($client);
+
+    $file = new Google_Service_Drive_DriveFile();
+    $file->setName(basename($imagePath));
+    $file->setParents(array('your_drive_folder_id')); // specify the folder ID in Google Drive
+
+    $data = file_get_contents($imagePath);
+
+    $createdFile = $service->files->create($file, array(
+        'data' => $data,
+        'mimeType' => mime_content_type($imagePath),
+        'uploadType' => 'multipart'
+    ));
+
+    return $createdFile->id;
+}
+
+// Delete image from Google Drive
+function deleteImageFromDrive($fileId) {
+    $client = getClient();
+    $service = new Google_Service_Drive($client);
+    $service->files->delete($fileId);
+}
+
+// Insert record with multiple images
+function insertRecord($conn, $name, $imagePaths) {
+    $imageIds = [];
+    foreach ($imagePaths as $path) {
+        $imageIds[] = uploadImageToDrive($path);
+    }
+    $imageIdsStr = implode(',', $imageIds);
+
+    $sql = "INSERT INTO users (name, images) VALUES ('$name', '$imageIdsStr')";
+    if ($conn->query($sql) === TRUE) {
+        echo "New record created successfully";
+    } else {
+        echo "Error: " . $sql . "<br>" . $conn->error;
+    }
+}
+
+// Update record with new images
+function updateRecord($conn, $id, $name, $newImagePaths) {
+    $sql = "SELECT images FROM users WHERE id=$id";
+    $result = $conn->query($sql);
+    if ($result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $existingImageIds = explode(',', $row['images']);
+        
+        // Delete old images from Google Drive
+        foreach ($existingImageIds as $fileId) {
+            deleteImageFromDrive($fileId);
+        }
+
+        // Upload new images to Google Drive
+        $newImageIds = [];
+        foreach ($newImagePaths as $path) {
+            $newImageIds[] = uploadImageToDrive($path);
+        }
+        $newImageIdsStr = implode(',', $newImageIds);
+
+        $sql = "UPDATE users SET name='$name', images='$newImageIdsStr' WHERE id=$id";
+        if ($conn->query($sql) === TRUE) {
+            echo "Record updated successfully";
+        } else {
+            echo "Error updating record: " . $conn->error;
+        }
+    } else {
+        echo "Record not found";
+    }
+}
+
+// Delete record and its images
+function deleteRecord($conn, $id) {
+    $sql = "SELECT images FROM users WHERE id=$id";
+    $result = $conn->query($sql);
+    if ($result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $imageIds = explode(',', $row['images']);
+        
+        // Delete images from Google Drive
+        foreach ($imageIds as $fileId) {
+            deleteImageFromDrive($fileId);
+        }
+
+        $sql = "DELETE FROM users WHERE id=$id";
+        if ($conn->query($sql) === TRUE) {
+            echo "Record deleted successfully";
+        } else {
+            echo "Error deleting record: " . $conn->error;
+        }
+    } else {
+        echo "Record not found";
+    }
+}
+
+// Example usage
+// Uncomment the function you want to use and provide the necessary parameters
+
+// insertRecord($conn, 'John Doe', ['path/to/john1.png', 'path/to/john2.png']);
+// updateRecord($conn, 1, 'Jane Doe', ['path/to/jane1.png', 'path/to/jane2.png']);
+// deleteRecord($conn, 1);
+
+$conn->close();
+?>
+
+
+
+
+Notes:
+
+Authentication: Ensure you have the credentials.json file from your Google Cloud project in the same directory as your PHP script.
+Folder ID: Replace 'your_drive_folder_id' with the ID of the folder in Google Drive where you want to store the images.
+Example Usage: Uncomment the function calls and provide the necessary parameters to test inserting, updating, or deleting records.
+
+
+Steps to Run:
+Install Composer Dependencies: Ensure you have Composer installed and run composer install to get the Google API Client Library.
+Run the PHP Script: Execute the PHP script on your server or local development environment.
+
+
+
